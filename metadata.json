@@ -1,0 +1,6 @@
+{
+  "name": "Radar de Aves",
+  "description": "Descubre e identifica las aves que cantan en tu zona, escucha su canto y aprende sobre la naturaleza.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
