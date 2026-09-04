@@ -44,4 +44,7 @@ interface BirdDao {
 
     @Query("DELETE FROM birds_cache")
     suspend fun clearAll()
+
+    @Query("DELETE FROM birds_cache WHERE isFavorite = 0")
+    suspend fun clearNonFavorites()
 }

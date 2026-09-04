@@ -10,6 +10,18 @@ data class INatTaxaResponse(
 )
 
 @JsonClass(generateAdapter = true)
+data class INatSpeciesCountsResponse(
+    @Json(name = "total_results") val totalResults: Int? = null,
+    @Json(name = "results") val results: List<INatSpeciesCountResult>? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class INatSpeciesCountResult(
+    @Json(name = "count") val count: Int? = null,
+    @Json(name = "taxon") val taxon: INatTaxonResult? = null
+)
+
+@JsonClass(generateAdapter = true)
 data class INatTaxonResult(
     @Json(name = "id") val id: Long? = null,
     @Json(name = "name") val name: String? = null,

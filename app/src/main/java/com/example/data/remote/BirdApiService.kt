@@ -1,6 +1,7 @@
 package com.example.data.remote
 
 import com.example.data.remote.dto.EbirdObservationDto
+import com.example.data.remote.dto.INatSpeciesCountsResponse
 import com.example.data.remote.dto.INatTaxaResponse
 import com.example.data.remote.dto.IucnSpeciesResponse
 import com.example.data.remote.dto.XenoCantoResponse
@@ -45,6 +46,16 @@ interface INaturalistApiService {
         @Path("id") taxonId: Long,
         @Query("locale") locale: String = "es"
     ): INatTaxaResponse
+
+    @GET("v1/observations/species_counts")
+    suspend fun getNearbySpeciesCounts(
+        @Query("lat") lat: Double,
+        @Query("lng") lng: Double,
+        @Query("radius") radiusKm: Int = 60,
+        @Query("taxon_id") taxonId: Int = 3, // Birds
+        @Query("locale") locale: String = "es",
+        @Query("per_page") perPage: Int = 25
+    ): INatSpeciesCountsResponse
 }
 
 interface XenoCantoApiService {

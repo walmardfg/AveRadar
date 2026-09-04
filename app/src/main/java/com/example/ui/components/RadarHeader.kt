@@ -288,6 +288,40 @@ fun RadarHeader(
                     focusManager.clearFocus()
                 })
             )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp)
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                val suggestions = listOf("📍 Mi GPS", "Bariloche", "Buenos Aires", "Córdoba", "Mendoza", "Madrid", "Bogotá", "Cancún", "Santiago")
+                suggestions.forEach { place ->
+                    Surface(
+                        shape = CircleShape,
+                        color = GeoSurfaceVariant,
+                        border = BorderStroke(1.dp, GeoOutline.copy(alpha = 0.3f)),
+                        modifier = Modifier
+                            .clickable {
+                                if (place == "📍 Mi GPS") {
+                                    onRefreshLocation()
+                                } else {
+                                    onSearchCity(place)
+                                }
+                                isEditingLocation = false
+                                focusManager.clearFocus()
+                            }
+                    ) {
+                        Text(
+                            text = place,
+                            style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp),
+                            color = GeoTextPrimary,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+            }
         }
 
         Spacer(modifier = Modifier.height(10.dp))

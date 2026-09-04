@@ -91,23 +91,50 @@ class BirdViewModel(application: Application) : AndroidViewModel(application) {
             val location = locationHelper.getCurrentLocation()
             _uiState.value = _uiState.value.copy(currentLocation = location)
 
-            repository.fetchNearbyBirds(location.latitude, location.longitude)
-            _uiState.value = _uiState.value.copy(isRefreshing = false)
-            applyCurrentFilters()
+            val result = repository.fetchNearbyBirds(location.latitude, location.longitude)
+            result.onSuccess { newBirds ->
+                if (newBirds.isNotEmpty()) {
+                    _uiState.value = _uiState.value.copy(
+                        birds = newBirds,
+                        filteredBirds = newBirds,
+                        isRefreshing = false
+                    )
+                    applyCurrentFilters()
+                } else {
+                    _uiState.value = _uiState.value.copy(isRefreshing = false)
+                }
+            }.onFailure {
+                _uiState.value = _uiState.value.copy(isRefreshing = false)
+            }
         }
     }
 
     fun searchLocationOrCity(query: String) {
         if (query.isBlank()) return
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isRefreshing = true)
+            _uiState.value = _uiState.value.copy(isRefreshing = true, errorMessage = null)
             audioPlayer.playChirpFeedback()
             val location = locationHelper.getCoordinatesForQuery(query)
             _uiState.value = _uiState.value.copy(currentLocation = location)
 
-            repository.fetchNearbyBirds(location.latitude, location.longitude)
-            _uiState.value = _uiState.value.copy(isRefreshing = false)
-            applyCurrentFilters()
+            val result = repository.fetchNearbyBirds(location.latitude, location.longitude)
+            result.onSuccess { newBirds ->
+                if (newBirds.isNotEmpty()) {
+                    _uiState.value = _uiState.value.copy(
+                        birds = newBirds,
+                        filteredBirds = newBirds,
+                        isRefreshing = false
+                    )
+                    applyCurrentFilters()
+                } else {
+                    _uiState.value = _uiState.value.copy(isRefreshing = false)
+                }
+            }.onFailure {
+                _uiState.value = _uiState.value.copy(
+                    isRefreshing = false,
+                    errorMessage = "No se pudieron obtener aves para ${location.cityName}"
+                )
+            }
         }
     }
 

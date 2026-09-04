@@ -13,6 +13,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
 class BirdRepository(
@@ -135,56 +136,130 @@ class BirdRepository(
             // First ensure we have basic seed data
             initializeCacheIfNeeded()
 
+            // 1. If eBird token is configured, try official eBird observations
             val token = ebirdApiToken?.takeIf { it.isNotBlank() }
-            val observations = try {
-                NetworkClient.ebirdApi.getRecentNearbyObservations(
-                    lat = lat,
-                    lng = lng,
-                    distKm = 30,
-                    backDays = 14,
-                    maxResults = 25,
-                    locale = "es",
-                    apiToken = token
-                )
-            } catch (e: Exception) {
-                Log.w("BirdRepository", "eBird API call failed, using fallback encyclopedia: ${e.message}")
+            val observations = if (token != null) {
+                try {
+                    NetworkClient.ebirdApi.getRecentNearbyObservations(
+                        lat = lat,
+                        lng = lng,
+                        distKm = 35,
+                        backDays = 14,
+                        maxResults = 25,
+                        locale = "es",
+                        apiToken = token
+                    )
+                } catch (e: Exception) {
+                    Log.w("BirdRepository", "eBird API call failed: ${e.message}")
+                    emptyList()
+                }
+            } else {
                 emptyList()
             }
 
-            if (observations.isEmpty()) {
-                // Return cached / seed list with simulated distance calculation
-                val cached = InitialBirdData.defaultBirds.map { bird ->
-                    bird.copy(distanceKm = calculateSimulatedDistance(lat, lng, bird.scientificName))
+            if (observations.isNotEmpty()) {
+                val uniqueObs = observations
+                    .filter { !it.sciName.isNullOrBlank() }
+                    .distinctBy { it.sciName }
+                    .take(20)
+
+                val enrichedBirds = uniqueObs.map { obs ->
+                    async {
+                        enrichBirdData(
+                            sciName = obs.sciName ?: "",
+                            comName = obs.comName ?: obs.sciName ?: "Ave Silvestre",
+                            obsLat = obs.lat ?: lat,
+                            obsLng = obs.lng ?: lng,
+                            userLat = lat,
+                            userLng = lng
+                        )
+                    }
+                }.awaitAll()
+
+                if (enrichedBirds.isNotEmpty()) {
+                    birdDao.clearNonFavorites()
+                    birdDao.insertBirds(enrichedBirds.map { BirdEntity.fromDomain(it) })
+                    return@withContext Result.success(enrichedBirds)
                 }
-                birdDao.insertBirds(cached.map { BirdEntity.fromDomain(it) })
-                return@withContext Result.success(cached)
             }
 
-            // Enrich unique species
-            val uniqueObs = observations
-                .filter { !it.sciName.isNullOrBlank() }
-                .distinctBy { it.sciName }
-                .take(15)
+            // 2. Query open worldwide iNaturalist species counts for this exact location (No API key needed!)
+            val inatBirds = try {
+                val inatResponse = NetworkClient.iNaturalistApi.getNearbySpeciesCounts(
+                    lat = lat,
+                    lng = lng,
+                    radiusKm = 60,
+                    locale = "es",
+                    perPage = 25
+                )
+                val results = inatResponse.results.orEmpty().filter { it.taxon != null && !it.taxon.name.isNullOrBlank() }
+                results.mapIndexed { index, item ->
+                    val taxon = item.taxon!!
+                    val sciName = taxon.name ?: "Avis sp."
+                    val commonNameRaw = taxon.preferredCommonName ?: sciName
+                    val commonName = commonNameRaw.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() }
 
-            val enrichedBirds = uniqueObs.map { obs ->
-                async {
-                    enrichBirdData(
-                        sciName = obs.sciName ?: "",
-                        comName = obs.comName ?: obs.sciName ?: "Ave Silvestre",
-                        obsLat = obs.lat ?: lat,
-                        obsLng = obs.lng ?: lng,
-                        userLat = lat,
-                        userLng = lng
+                    val photoList = mutableListOf<String>()
+                    taxon.defaultPhoto?.mediumUrl?.let { photoList.add(it) }
+                    taxon.taxonPhotos?.forEach { tp ->
+                        tp.photo?.mediumUrl?.let { photoList.add(it) }
+                    }
+                    val distinctPhotos = if (photoList.isNotEmpty()) {
+                        photoList.distinct()
+                    } else {
+                        listOf("https://images.unsplash.com/photo-1552728089-57bdde30beb3?w=800&auto=format&fit=crop&q=80")
+                    }
+
+                    val desc = if (!taxon.wikipediaSummary.isNullOrBlank()) {
+                        cleanWikipediaSummary(taxon.wikipediaSummary)
+                    } else {
+                        "Especie de ave autóctona y silvestre registrada en esta región. Cumple un rol vital en el equilibrio ecológico dispersando semillas y controlando poblaciones de insectos."
+                    }
+
+                    val conservation = if (taxon.conservationStatus?.status != null) {
+                        ConservationStatus.fromCode(taxon.conservationStatus.status)
+                    } else {
+                        ConservationStatus.LEAST_CONCERN
+                    }
+
+                    val dist = 0.3 + (index * 0.7)
+
+                    BirdSpecies(
+                        scientificName = sciName,
+                        commonName = commonName,
+                        familyName = "Aves",
+                        description = desc,
+                        conservationStatus = conservation,
+                        audioUrl = null, // Will dynamically query and cache Xeno-canto
+                        photoUrls = distinctPhotos,
+                        soundDuration = "0:15",
+                        funFact = "Confirmada ${item.count ?: 1} veces en esta zona por la comunidad científica y observadores de aves.",
+                        wingspan = "22 - 45 cm",
+                        diet = "Semillas, insectos y brotes silvestres",
+                        distanceKm = Math.round(dist * 10.0) / 10.0,
+                        isDiscovered = index < 2,
+                        isFavorite = false
                     )
                 }
-            }.awaitAll()
-
-            if (enrichedBirds.isNotEmpty()) {
-                birdDao.insertBirds(enrichedBirds.map { BirdEntity.fromDomain(it) })
-                Result.success(enrichedBirds)
-            } else {
-                Result.success(InitialBirdData.defaultBirds)
+            } catch (e: Exception) {
+                Log.w("BirdRepository", "iNaturalist nearby species query error: ${e.message}")
+                emptyList()
             }
+
+            if (inatBirds.isNotEmpty()) {
+                Log.d("BirdRepository", "Loaded ${inatBirds.size} birds from iNaturalist for location ($lat, $lng)")
+                birdDao.clearNonFavorites()
+                birdDao.insertBirds(inatBirds.map { BirdEntity.fromDomain(it) })
+                return@withContext Result.success(inatBirds)
+            }
+
+            // 3. Fallback: Return cached / seed list with simulated distance calculation
+            val cached = InitialBirdData.defaultBirds.map { bird ->
+                bird.copy(distanceKm = calculateSimulatedDistance(lat, lng, bird.scientificName))
+            }
+            birdDao.clearNonFavorites()
+            birdDao.insertBirds(cached.map { BirdEntity.fromDomain(it) })
+            Result.success(cached)
         } catch (e: Exception) {
             Log.e("BirdRepository", "Error fetching nearby birds", e)
             Result.failure(e)
