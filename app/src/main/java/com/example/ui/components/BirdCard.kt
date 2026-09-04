@@ -174,7 +174,7 @@ fun BirdCard(
                 // Bottom-End: Geometric Balance Audio Play Button (44dp x 44dp circular)
                 Surface(
                     shape = CircleShape,
-                    color = if (isCurrentlyPlaying) GeoPrimaryGreen else Color.White.copy(alpha = 0.95f),
+                    color = if (isCurrentlyPlaying || isBuffering) GeoPrimaryGreen else Color.White.copy(alpha = 0.95f),
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .padding(8.dp)
@@ -187,7 +187,7 @@ fun BirdCard(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier.fillMaxSize()
                     ) {
-                        if (isBuffering && isCurrentlyPlaying) {
+                        if (isBuffering) {
                             CircularProgressIndicator(
                                 modifier = Modifier.size(20.dp),
                                 color = Color.White,

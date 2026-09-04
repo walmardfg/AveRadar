@@ -54,3 +54,21 @@ data class INatConservationStatus(
     @Json(name = "status_name") val statusName: String? = null,
     @Json(name = "iucn") val iucn: Int? = null
 )
+
+@JsonClass(generateAdapter = true)
+data class INatObservationsResponse(
+    @Json(name = "total_results") val totalResults: Int? = null,
+    @Json(name = "results") val results: List<INatObservationItem>? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class INatObservationItem(
+    @Json(name = "id") val id: Long? = null,
+    @Json(name = "sounds") val sounds: List<INatSoundItem>? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class INatSoundItem(
+    @Json(name = "id") val id: Long? = null,
+    @Json(name = "file_url") val fileUrl: String? = null
+)

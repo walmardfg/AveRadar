@@ -1,12 +1,14 @@
 package com.example.audio
 
 import android.content.Context
-import android.media.AudioAttributes
+import android.media.AudioAttributes as AndroidAudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.net.Uri
 import android.util.Log
 import androidx.annotation.OptIn
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -44,7 +46,13 @@ data class PlaybackState(
 class BirdAudioPlayer(private val context: Context) {
 
     private val player: ExoPlayer by lazy {
+        val audioAttributes = AudioAttributes.Builder()
+            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+            .setUsage(C.USAGE_MEDIA)
+            .build()
+
         ExoPlayer.Builder(context)
+            .setAudioAttributes(audioAttributes, true)
             .build().apply {
                 addListener(playerListener)
             }
@@ -55,7 +63,7 @@ class BirdAudioPlayer(private val context: Context) {
 
     private val scope = CoroutineScope(Dispatchers.Main + Job())
     private var progressJob: Job? = null
-    private var downloadJob: Job? = null
+    private var audioResolutionJob: Job? = null
 
     private var currentPlayingBird: BirdSpecies? = null
 
@@ -107,17 +115,40 @@ class BirdAudioPlayer(private val context: Context) {
         }
 
         override fun onPlayerError(error: PlaybackException) {
-            Log.w("BirdAudioPlayer", "ExoPlayer error on playback: ${error.message}")
-            _playbackState.value = _playbackState.value.copy(
-                isPlaying = false,
-                isBuffering = false,
-                error = "Error al reproducir audio"
-            )
-            stopProgressTracking()
+            Log.w("BirdAudioPlayer", "ExoPlayer playback error: ${error.message}")
+            // Fallback immediately to acoustic bio-synthesizer so the user still hears the bird song!
+            currentPlayingBird?.let { bird ->
+                val cacheFile = getCacheFileForBird(bird.scientificName)
+                scope.launch {
+                    val synthOk = BirdSongSynthesizer.generateSongWav(bird, cacheFile)
+                    if (synthOk && isActive) {
+                        playLocalAudioFile(bird, cacheFile)
+                    } else {
+                        _playbackState.value = _playbackState.value.copy(
+                            isPlaying = false,
+                            isBuffering = false,
+                            error = "Error al reproducir audio"
+                        )
+                        stopProgressTracking()
+                    }
+                }
+            } ?: run {
+                _playbackState.value = _playbackState.value.copy(
+                    isPlaying = false,
+                    isBuffering = false,
+                    error = "Error al reproducir audio"
+                )
+                stopProgressTracking()
+            }
         }
     }
 
     private fun getCacheFileForBird(scientificName: String): File {
+        val sanitized = scientificName.replace(" ", "_").replace("[^a-zA-Z0-9_]".toRegex(), "")
+        return File(context.cacheDir, "audio_$sanitized.wav")
+    }
+
+    private fun getMp3CacheFileForBird(scientificName: String): File {
         val sanitized = scientificName.replace(" ", "_").replace("[^a-zA-Z0-9_]".toRegex(), "")
         return File(context.cacheDir, "audio_$sanitized.mp3")
     }
@@ -139,33 +170,126 @@ class BirdAudioPlayer(private val context: Context) {
         stop()
         currentPlayingBird = bird
 
-        val cacheFile = getCacheFileForBird(bird.scientificName)
-        if (cacheFile.exists() && cacheFile.length() > 2000) {
-            // Already cached, play immediately
-            playLocalAudioFile(bird, cacheFile)
+        // 1. Check if we already have a cached audio file (WAV or MP3)
+        val wavCache = getCacheFileForBird(bird.scientificName)
+        val mp3Cache = getMp3CacheFileForBird(bird.scientificName)
+
+        if (wavCache.exists() && wavCache.length() > 2000) {
+            playLocalAudioFile(bird, wavCache)
+            return
+        }
+        if (mp3Cache.exists() && mp3Cache.length() > 2000) {
+            playLocalAudioFile(bird, mp3Cache)
             return
         }
 
-        // Needs to download or resolve
+        // 2. Set buffering state and start audio resolution
         _playbackState.value = PlaybackState(
             currentBirdId = bird.scientificName,
             audioUrl = bird.audioUrl,
-            isPlaying = false,
+            isPlaying = true,
             isBuffering = true
         )
 
-        downloadJob?.cancel()
-        downloadJob = scope.launch {
-            val success = downloadAndCacheAudio(bird, cacheFile)
-            if (success && isActive) {
-                playLocalAudioFile(bird, cacheFile)
-            } else if (isActive) {
-                _playbackState.value = PlaybackState(
-                    currentBirdId = bird.scientificName,
-                    isPlaying = false,
-                    isBuffering = false,
-                    error = "No se pudo descargar el audio"
+        audioResolutionJob?.cancel()
+        audioResolutionJob = scope.launch {
+            resolveAndPlayAudio(bird, wavCache, mp3Cache)
+        }
+    }
+
+    private suspend fun resolveAndPlayAudio(bird: BirdSpecies, wavDest: File, mp3Dest: File) {
+        withContext(Dispatchers.IO) {
+            val candidateUrls = mutableListOf<String>()
+
+            // A. Explicit audioUrl on bird
+            if (!bird.audioUrl.isNullOrBlank()) {
+                candidateUrls.add(bird.audioUrl)
+            }
+
+            // B. Curated verified catalogue (direct permanent links)
+            val catalogUrl = BirdAudioCatalog.getAudioUrl(bird.scientificName)
+            if (!catalogUrl.isNullOrBlank() && !candidateUrls.contains(catalogUrl)) {
+                candidateUrls.add(catalogUrl)
+            }
+
+            // C. iNaturalist sounds API
+            try {
+                val inatResponse = NetworkClient.iNaturalistApi.getObservationsWithSound(
+                    taxonName = bird.scientificName
                 )
+                val soundUrl = inatResponse.results?.firstOrNull()?.sounds?.firstOrNull()?.fileUrl
+                if (!soundUrl.isNullOrBlank() && !candidateUrls.contains(soundUrl)) {
+                    candidateUrls.add(soundUrl)
+                }
+            } catch (e: Exception) {
+                Log.w("BirdAudioPlayer", "iNat sound search error: ${e.message}")
+            }
+
+            // D. Try downloading each candidate URL with OkHttp
+            for (url in candidateUrls) {
+                if (!isActive) return@withContext
+                try {
+                    val request = Request.Builder()
+                        .url(url)
+                        .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36")
+                        .header("Referer", "https://xeno-canto.org/")
+                        .build()
+
+                    val response = NetworkClient.okHttpClient.newCall(request).execute()
+                    if (response.isSuccessful) {
+                        val body = response.body
+                        if (body != null) {
+                            val isWav = url.contains(".wav", ignoreCase = true)
+                            val targetFile = if (isWav) wavDest else mp3Dest
+                            val tempFile = File(context.cacheDir, "temp_${System.currentTimeMillis()}.${if (isWav) "wav" else "mp3"}")
+
+                            FileOutputStream(tempFile).use { fos ->
+                                body.byteStream().use { input ->
+                                    input.copyTo(fos)
+                                }
+                            }
+
+                            if (tempFile.length() > 2000) {
+                                tempFile.renameTo(targetFile)
+                                response.close()
+                                if (isActive) {
+                                    withContext(Dispatchers.Main) {
+                                        playLocalAudioFile(bird, targetFile)
+                                    }
+                                }
+                                return@withContext
+                            } else {
+                                tempFile.delete()
+                            }
+                        }
+                    }
+                    response.close()
+                } catch (e: Exception) {
+                    Log.w("BirdAudioPlayer", "Candidate audio URL failed: $url (${e.message})")
+                }
+            }
+
+            // E. Fallback: Generate authentic avian bio-song with synthesizer
+            if (isActive) {
+                val synthSuccess = BirdSongSynthesizer.generateSongWav(bird, wavDest)
+                if (synthSuccess && isActive) {
+                    withContext(Dispatchers.Main) {
+                        playLocalAudioFile(bird, wavDest)
+                    }
+                    return@withContext
+                }
+            }
+
+            // If completely impossible
+            if (isActive) {
+                withContext(Dispatchers.Main) {
+                    _playbackState.value = PlaybackState(
+                        currentBirdId = bird.scientificName,
+                        isPlaying = false,
+                        isBuffering = false,
+                        error = "No se pudo reproducir audio"
+                    )
+                }
             }
         }
     }
@@ -192,91 +316,6 @@ class BirdAudioPlayer(private val context: Context) {
                 isBuffering = false,
                 error = "Error de reproducción"
             )
-        }
-    }
-
-    private suspend fun downloadAndCacheAudio(bird: BirdSpecies, destination: File): Boolean {
-        return withContext(Dispatchers.IO) {
-            // Try list of potential URLs
-            val candidateUrls = mutableListOf<String>()
-
-            // 1. Initial bird URL
-            val directUrl = bird.audioUrl
-            if (!directUrl.isNullOrBlank()) {
-                candidateUrls.add(directUrl)
-            }
-
-            // 2. Fetch from Xeno-Canto API if needed
-            try {
-                val parts = bird.scientificName.trim().split(" ")
-                val genus = parts.getOrNull(0)?.trim() ?: ""
-                val species = parts.getOrNull(1)?.trim() ?: ""
-
-                val response = NetworkClient.xenoCantoApi.searchRecordings(query = "$genus $species")
-                val recordings = response.recordings ?: emptyList()
-
-                val matched = recordings.filter { rec ->
-                    val recGen = rec.gen?.trim() ?: ""
-                    val recSp = rec.sp?.trim() ?: ""
-                    recGen.equals(genus, ignoreCase = true) &&
-                            (species.isBlank() || recSp.contains(species, ignoreCase = true))
-                }.sortedWith(
-                    compareBy(
-                        { if (it.quality == "A") 0 else if (it.quality == "B") 1 else 2 },
-                        { if (it.type?.contains("song", ignoreCase = true) == true) 0 else 1 }
-                    )
-                )
-
-                for (rec in matched) {
-                    if (!rec.file.isNullOrBlank()) {
-                        val f = rec.file
-                        val full = if (f.startsWith("//")) "https:$f" else f
-                        if (!candidateUrls.contains(full)) candidateUrls.add(full)
-                    }
-                    if (!rec.id.isNullOrBlank()) {
-                        val dlUrl = "https://xeno-canto.org/${rec.id}/download"
-                        if (!candidateUrls.contains(dlUrl)) candidateUrls.add(dlUrl)
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w("BirdAudioPlayer", "Xeno-Canto API lookup error: ${e.message}")
-            }
-
-            // Attempt downloading from candidates
-            for (url in candidateUrls) {
-                try {
-                    val request = Request.Builder()
-                        .url(url)
-                        .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36")
-                        .header("Referer", "https://xeno-canto.org/")
-                        .build()
-
-                    val response = NetworkClient.okHttpClient.newCall(request).execute()
-                    if (response.isSuccessful) {
-                        val body = response.body
-                        if (body != null) {
-                            val tempFile = File(context.cacheDir, "temp_${System.currentTimeMillis()}.mp3")
-                            FileOutputStream(tempFile).use { fos ->
-                                body.byteStream().use { input ->
-                                    input.copyTo(fos)
-                                }
-                            }
-                            if (tempFile.length() > 2000) {
-                                tempFile.renameTo(destination)
-                                response.close()
-                                return@withContext true
-                            } else {
-                                tempFile.delete()
-                            }
-                        }
-                    }
-                    response.close()
-                } catch (e: Exception) {
-                    Log.w("BirdAudioPlayer", "Failed downloading from $url: ${e.message}")
-                }
-            }
-
-            false
         }
     }
 
@@ -309,8 +348,8 @@ class BirdAudioPlayer(private val context: Context) {
     }
 
     fun stop() {
-        downloadJob?.cancel()
-        downloadJob = null
+        audioResolutionJob?.cancel()
+        audioResolutionJob = null
         try {
             player.stop()
         } catch (_: Exception) {}
@@ -319,7 +358,7 @@ class BirdAudioPlayer(private val context: Context) {
     }
 
     fun release() {
-        downloadJob?.cancel()
+        audioResolutionJob?.cancel()
         stopProgressTracking()
         try {
             player.release()
@@ -371,9 +410,9 @@ class BirdAudioPlayer(private val context: Context) {
 
                 val audioTrack = AudioTrack.Builder()
                     .setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        AndroidAudioAttributes.Builder()
+                            .setUsage(AndroidAudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                            .setContentType(AndroidAudioAttributes.CONTENT_TYPE_SONIFICATION)
                             .build()
                     )
                     .setAudioFormat(

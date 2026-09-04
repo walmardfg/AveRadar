@@ -1,6 +1,7 @@
 package com.example.data.repository
 
 import android.util.Log
+import com.example.audio.BirdAudioCatalog
 import com.example.data.local.BirdDao
 import com.example.data.local.BirdEntity
 import com.example.data.remote.NetworkClient
@@ -223,6 +224,8 @@ class BirdRepository(
                     }
 
                     val dist = 0.3 + (index * 0.7)
+                    val resolvedAudio = BirdAudioCatalog.getAudioUrl(sciName)
+                        ?: InitialBirdData.defaultBirds.firstOrNull { it.scientificName.equals(sciName, ignoreCase = true) }?.audioUrl
 
                     BirdSpecies(
                         scientificName = sciName,
@@ -230,7 +233,7 @@ class BirdRepository(
                         familyName = "Aves",
                         description = desc,
                         conservationStatus = conservation,
-                        audioUrl = null, // Will dynamically query and cache Xeno-canto
+                        audioUrl = resolvedAudio,
                         photoUrls = distinctPhotos,
                         soundDuration = "0:15",
                         funFact = "Confirmada ${item.count ?: 1} veces en esta zona por la comunidad científica y observadores de aves.",
@@ -310,43 +313,19 @@ class BirdRepository(
             }
         }
 
-        // 2. Enrich with Xeno-canto for bird song audio if missing
+        // 2. Enrich with bird song audio if missing
         if (audioUrl == null) {
-            try {
-                val parts = sciName.trim().split(" ")
-                val genus = parts.getOrNull(0)?.trim() ?: ""
-                val species = parts.getOrNull(1)?.trim() ?: ""
-
-                val xenoResponse = try {
-                    NetworkClient.xenoCantoApi.searchRecordings(query = "sp:\"$sciName\"")
-                } catch (_: Exception) {
-                    NetworkClient.xenoCantoApi.searchRecordings(query = sciName)
-                }
-
-                val matched = xenoResponse.recordings?.filter { rec ->
-                    val recGen = rec.gen?.trim() ?: ""
-                    val recSp = rec.sp?.trim() ?: ""
-                    val isMatch = recGen.equals(genus, ignoreCase = true) &&
-                            (species.isBlank() || recSp.equals(species, ignoreCase = true) || recSp.contains(species, ignoreCase = true))
-                    isMatch && (!rec.file.isNullOrBlank() || !rec.id.isNullOrBlank())
-                }?.sortedWith(
-                    compareBy(
-                        { if (it.quality == "A") 0 else if (it.quality == "B") 1 else 2 },
-                        { if (it.type?.contains("song", ignoreCase = true) == true) 0 else 1 }
-                    )
-                )?.firstOrNull()
-
-                if (matched?.file != null) {
-                    var fileUrl = matched.file
-                    if (fileUrl.startsWith("//")) {
-                        fileUrl = "https:$fileUrl"
+            audioUrl = BirdAudioCatalog.getAudioUrl(sciName)
+            if (audioUrl == null) {
+                try {
+                    val inatObs = NetworkClient.iNaturalistApi.getObservationsWithSound(taxonName = sciName)
+                    val soundUrl = inatObs.results?.firstOrNull()?.sounds?.firstOrNull()?.fileUrl
+                    if (!soundUrl.isNullOrBlank()) {
+                        audioUrl = soundUrl
                     }
-                    audioUrl = fileUrl
-                } else if (matched?.id != null) {
-                    audioUrl = "https://xeno-canto.org/${matched.id}/download"
+                } catch (e: Exception) {
+                    Log.w("BirdRepository", "iNat sound search error for $sciName: ${e.message}")
                 }
-            } catch (e: Exception) {
-                Log.w("BirdRepository", "Xeno-canto fetch error for $sciName: ${e.message}")
             }
         }
 
