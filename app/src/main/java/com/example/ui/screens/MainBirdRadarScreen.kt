@@ -33,9 +33,11 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.NaturePeople
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -107,9 +109,11 @@ fun MainBirdRadarScreen(
                 isRefreshing = uiState.isRefreshing,
                 searchQuery = uiState.searchQuery,
                 activeFilter = uiState.activeFilter,
+                isSearchingOnline = uiState.isSearchingOnline,
                 onRefreshLocation = { viewModel.detectGpsAndFetch() },
                 onSearchCity = { city -> viewModel.searchLocationOrCity(city) },
                 onUpdateSearchQuery = { q -> viewModel.updateSearchQuery(q) },
+                onTriggerSearchOnline = { q -> viewModel.searchBirdsOnline(q) },
                 onSelectFilter = { f -> viewModel.setFilter(f) },
                 onShowInfoClick = { showInfoDialog = true }
             )
@@ -277,12 +281,45 @@ fun MainBirdRadarScreen(
                         )
                     }
                 }
+            } else if (uiState.isSearchingOnline) {
+                // Searching Online State
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        CircularProgressIndicator(
+                            color = GeoPrimaryGreen,
+                            strokeWidth = 3.dp,
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = "Buscando \"${uiState.searchQuery}\"...",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = GeoTextPrimary,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Consultando catálogo global, fotos y cantos de aves...",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = GeoTextSecondary,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
             } else if (uiState.filteredBirds.isEmpty()) {
                 // Empty State
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(32.dp),
+                        .padding(24.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Column(
@@ -306,28 +343,54 @@ fun MainBirdRadarScreen(
                         }
                         Spacer(modifier = Modifier.height(16.dp))
                         Text(
-                            text = "No se encontraron aves",
+                            text = if (uiState.searchQuery.isNotBlank()) "No encontrada localmente" else "No se encontraron aves",
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                             color = GeoTextPrimary,
                             textAlign = TextAlign.Center
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "Prueba buscando con otro término o seleccionando 'Todas'.",
+                            text = if (uiState.searchQuery.isNotBlank())
+                                "¿Deseas buscar \"${uiState.searchQuery}\" en la base mundial de aves e iNaturalist con audio?"
+                            else
+                                "Prueba buscando con otro término o seleccionando 'Todas'.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = GeoTextSecondary,
                             textAlign = TextAlign.Center
                         )
                         Spacer(modifier = Modifier.height(16.dp))
-                        Button(
-                            onClick = {
-                                viewModel.updateSearchQuery("")
-                                viewModel.setFilter(com.example.ui.viewmodel.BirdFilter.ALL)
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = GeoPrimaryGreen),
-                            shape = CircleShape
-                        ) {
-                            Text("Ver todas las aves")
+
+                        if (uiState.searchQuery.isNotBlank()) {
+                            Button(
+                                onClick = { viewModel.searchBirdsOnline(uiState.searchQuery) },
+                                colors = ButtonDefaults.buttonColors(containerColor = GeoPrimaryGreen),
+                                shape = CircleShape
+                            ) {
+                                Icon(imageVector = Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Buscar en catálogo mundial")
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.updateSearchQuery("")
+                                    viewModel.setFilter(com.example.ui.viewmodel.BirdFilter.ALL)
+                                },
+                                shape = CircleShape
+                            ) {
+                                Text("Ver todas las aves locales")
+                            }
+                        } else {
+                            Button(
+                                onClick = {
+                                    viewModel.updateSearchQuery("")
+                                    viewModel.setFilter(com.example.ui.viewmodel.BirdFilter.ALL)
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = GeoPrimaryGreen),
+                                shape = CircleShape
+                            ) {
+                                Text("Ver todas las aves")
+                            }
                         }
                     }
                 }

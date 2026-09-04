@@ -15,6 +15,9 @@ interface BirdDao {
     @Query("SELECT * FROM birds_cache WHERE commonName LIKE '%' || :query || '%' OR scientificName LIKE '%' || :query || '%' OR familyName LIKE '%' || :query || '%'")
     fun searchBirdsFlow(query: String): Flow<List<BirdEntity>>
 
+    @Query("SELECT * FROM birds_cache WHERE commonName LIKE '%' || :query || '%' OR scientificName LIKE '%' || :query || '%' OR familyName LIKE '%' || :query || '%'")
+    suspend fun searchBirds(query: String): List<BirdEntity>
+
     @Query("SELECT * FROM birds_cache WHERE scientificName = :scientificName LIMIT 1")
     suspend fun getBirdByScientificName(scientificName: String): BirdEntity?
 

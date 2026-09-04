@@ -64,8 +64,11 @@ class BirdAudioPlayer(private val context: Context) {
     private val scope = CoroutineScope(Dispatchers.Main + Job())
     private var progressJob: Job? = null
     private var audioResolutionJob: Job? = null
+    private var activeAudioTrack: android.media.AudioTrack? = null
+    private var isPlayingSyntheticTrack = false
 
     private var currentPlayingBird: BirdSpecies? = null
+    private var hasAttemptedSyntheticFallback = false
 
     private val playerListener = object : Player.Listener {
         override fun onPlaybackStateChanged(state: Int) {
@@ -96,11 +99,13 @@ class BirdAudioPlayer(private val context: Context) {
                     stopProgressTracking()
                 }
                 Player.STATE_IDLE -> {
-                    _playbackState.value = _playbackState.value.copy(
-                        isPlaying = false,
-                        isBuffering = false
-                    )
-                    stopProgressTracking()
+                    if (!isPlayingSyntheticTrack) {
+                        _playbackState.value = _playbackState.value.copy(
+                            isPlaying = false,
+                            isBuffering = false
+                        )
+                        stopProgressTracking()
+                    }
                 }
             }
         }
@@ -109,30 +114,26 @@ class BirdAudioPlayer(private val context: Context) {
             _playbackState.value = _playbackState.value.copy(isPlaying = isPlaying)
             if (isPlaying) {
                 startProgressTracking()
-            } else {
+            } else if (!isPlayingSyntheticTrack) {
                 stopProgressTracking()
             }
         }
 
         override fun onPlayerError(error: PlaybackException) {
             Log.w("BirdAudioPlayer", "ExoPlayer playback error: ${error.message}")
-            // Fallback immediately to acoustic bio-synthesizer so the user still hears the bird song!
-            currentPlayingBird?.let { bird ->
-                val cacheFile = getCacheFileForBird(bird.scientificName)
-                scope.launch {
-                    val synthOk = BirdSongSynthesizer.generateSongWav(bird, cacheFile)
-                    if (synthOk && isActive) {
-                        playLocalAudioFile(bird, cacheFile)
-                    } else {
-                        _playbackState.value = _playbackState.value.copy(
-                            isPlaying = false,
-                            isBuffering = false,
-                            error = "Error al reproducir audio"
-                        )
-                        stopProgressTracking()
-                    }
+            if (!hasAttemptedSyntheticFallback) {
+                hasAttemptedSyntheticFallback = true
+                currentPlayingBird?.let { bird ->
+                    playSyntheticFallback(bird)
+                } ?: run {
+                    _playbackState.value = _playbackState.value.copy(
+                        isPlaying = false,
+                        isBuffering = false,
+                        error = "Error al reproducir audio"
+                    )
+                    stopProgressTracking()
                 }
-            } ?: run {
+            } else {
                 _playbackState.value = _playbackState.value.copy(
                     isPlaying = false,
                     isBuffering = false,
@@ -157,8 +158,7 @@ class BirdAudioPlayer(private val context: Context) {
         val current = _playbackState.value
         if (current.currentBirdId == bird.scientificName) {
             if (current.isPlaying) {
-                player.pause()
-                _playbackState.value = current.copy(isPlaying = false)
+                stop()
                 return
             } else if (player.playbackState == Player.STATE_READY) {
                 player.play()
@@ -168,6 +168,7 @@ class BirdAudioPlayer(private val context: Context) {
         }
 
         stop()
+        hasAttemptedSyntheticFallback = false
         currentPlayingBird = bird
 
         // 1. Check if we already have a cached audio file (WAV or MP3)
@@ -183,7 +184,7 @@ class BirdAudioPlayer(private val context: Context) {
             return
         }
 
-        // 2. Set buffering state and start audio resolution
+        // 2. Set buffering state and resolve audio source
         _playbackState.value = PlaybackState(
             currentBirdId = bird.scientificName,
             audioUrl = bird.audioUrl,
@@ -198,104 +199,95 @@ class BirdAudioPlayer(private val context: Context) {
     }
 
     private suspend fun resolveAndPlayAudio(bird: BirdSpecies, wavDest: File, mp3Dest: File) {
-        withContext(Dispatchers.IO) {
-            val candidateUrls = mutableListOf<String>()
+        // A. Resolve candidate URL from catalog or bird object
+        var streamUrl: String? = null
 
-            // A. Explicit audioUrl on bird
-            if (!bird.audioUrl.isNullOrBlank()) {
-                candidateUrls.add(bird.audioUrl)
+        if (!bird.audioUrl.isNullOrBlank()) {
+            streamUrl = bird.audioUrl
+        } else {
+            val catalogUrl = BirdAudioCatalog.getAudioUrl(bird.scientificName, bird.commonName)
+            if (!catalogUrl.isNullOrBlank()) {
+                streamUrl = catalogUrl
             }
+        }
 
-            // B. Curated verified catalogue (direct permanent links)
-            val catalogUrl = BirdAudioCatalog.getAudioUrl(bird.scientificName)
-            if (!catalogUrl.isNullOrBlank() && !candidateUrls.contains(catalogUrl)) {
-                candidateUrls.add(catalogUrl)
-            }
-
-            // C. iNaturalist sounds API
-            try {
-                val inatResponse = NetworkClient.iNaturalistApi.getObservationsWithSound(
-                    taxonName = bird.scientificName
-                )
-                val soundUrl = inatResponse.results?.firstOrNull()?.sounds?.firstOrNull()?.fileUrl
-                if (!soundUrl.isNullOrBlank() && !candidateUrls.contains(soundUrl)) {
-                    candidateUrls.add(soundUrl)
-                }
-            } catch (e: Exception) {
-                Log.w("BirdAudioPlayer", "iNat sound search error: ${e.message}")
-            }
-
-            // D. Try downloading each candidate URL with OkHttp
-            for (url in candidateUrls) {
-                if (!isActive) return@withContext
+        // B. If not in catalog, search iNaturalist sounds API
+        if (streamUrl.isNullOrBlank()) {
+            withContext(Dispatchers.IO) {
                 try {
-                    val request = Request.Builder()
-                        .url(url)
-                        .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36")
-                        .header("Referer", "https://xeno-canto.org/")
-                        .build()
+                    val inatResponse = NetworkClient.iNaturalistApi.getObservationsWithSound(
+                        taxonName = bird.scientificName
+                    )
+                    streamUrl = inatResponse.results?.firstOrNull()?.sounds?.firstOrNull()?.fileUrl
+                } catch (e: Exception) {
+                    Log.w("BirdAudioPlayer", "iNat sound search error: ${e.message}")
+                }
+            }
+        }
 
+        // C. If streamable URL exists, stream directly via ExoPlayer!
+        if (!streamUrl.isNullOrBlank()) {
+            withContext(Dispatchers.Main) {
+                playDirectStream(bird, streamUrl!!)
+            }
+
+            // Cache in background for offline use without blocking playback
+            scope.launch(Dispatchers.IO) {
+                try {
+                    val isWav = streamUrl!!.contains(".wav", ignoreCase = true)
+                    val targetFile = if (isWav) wavDest else mp3Dest
+                    val request = Request.Builder()
+                        .url(streamUrl!!)
+                        .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36")
+                        .build()
                     val response = NetworkClient.okHttpClient.newCall(request).execute()
                     if (response.isSuccessful) {
-                        val body = response.body
-                        if (body != null) {
-                            val isWav = url.contains(".wav", ignoreCase = true)
-                            val targetFile = if (isWav) wavDest else mp3Dest
-                            val tempFile = File(context.cacheDir, "temp_${System.currentTimeMillis()}.${if (isWav) "wav" else "mp3"}")
-
+                        response.body?.byteStream()?.use { input ->
+                            val tempFile = File(context.cacheDir, "temp_cache_${System.currentTimeMillis()}.${if (isWav) "wav" else "mp3"}")
                             FileOutputStream(tempFile).use { fos ->
-                                body.byteStream().use { input ->
-                                    input.copyTo(fos)
-                                }
+                                input.copyTo(fos)
                             }
-
                             if (tempFile.length() > 2000) {
                                 tempFile.renameTo(targetFile)
-                                response.close()
-                                if (isActive) {
-                                    withContext(Dispatchers.Main) {
-                                        playLocalAudioFile(bird, targetFile)
-                                    }
-                                }
-                                return@withContext
                             } else {
                                 tempFile.delete()
                             }
                         }
                     }
                     response.close()
-                } catch (e: Exception) {
-                    Log.w("BirdAudioPlayer", "Candidate audio URL failed: $url (${e.message})")
-                }
+                } catch (_: Exception) {}
             }
+            return
+        }
 
-            // E. Fallback: Generate authentic avian bio-song with synthesizer
-            if (isActive) {
-                val synthSuccess = BirdSongSynthesizer.generateSongWav(bird, wavDest)
-                if (synthSuccess && isActive) {
-                    withContext(Dispatchers.Main) {
-                        playLocalAudioFile(bird, wavDest)
-                    }
-                    return@withContext
-                }
-            }
+        // D. If no online sound is found, immediately play synthesized avian song
+        playSyntheticFallback(bird)
+    }
 
-            // If completely impossible
-            if (isActive) {
-                withContext(Dispatchers.Main) {
-                    _playbackState.value = PlaybackState(
-                        currentBirdId = bird.scientificName,
-                        isPlaying = false,
-                        isBuffering = false,
-                        error = "No se pudo reproducir audio"
-                    )
-                }
-            }
+    private fun playDirectStream(bird: BirdSpecies, url: String) {
+        try {
+            stopSyntheticTrack()
+            player.clearMediaItems()
+            val mediaItem = MediaItem.fromUri(Uri.parse(url))
+            player.setMediaItem(mediaItem)
+            player.prepare()
+            player.play()
+
+            _playbackState.value = PlaybackState(
+                currentBirdId = bird.scientificName,
+                audioUrl = url,
+                isPlaying = true,
+                isBuffering = true
+            )
+        } catch (e: Exception) {
+            Log.e("BirdAudioPlayer", "Failed playing direct stream", e)
+            playSyntheticFallback(bird)
         }
     }
 
     private fun playLocalAudioFile(bird: BirdSpecies, file: File) {
         try {
+            stopSyntheticTrack()
             player.clearMediaItems()
             val mediaItem = MediaItem.fromUri(Uri.fromFile(file))
             player.setMediaItem(mediaItem)
@@ -310,13 +302,86 @@ class BirdAudioPlayer(private val context: Context) {
             )
         } catch (e: Exception) {
             Log.e("BirdAudioPlayer", "Failed playing local file", e)
-            _playbackState.value = PlaybackState(
-                currentBirdId = bird.scientificName,
-                isPlaying = false,
-                isBuffering = false,
-                error = "Error de reproducción"
-            )
+            playSyntheticFallback(bird)
         }
+    }
+
+    private fun playSyntheticFallback(bird: BirdSpecies) {
+        scope.launch(Dispatchers.Main) {
+            try {
+                stopSyntheticTrack()
+                try {
+                    player.stop()
+                } catch (_: Exception) {}
+
+                val wavCache = getCacheFileForBird(bird.scientificName)
+                val track = withContext(Dispatchers.Default) {
+                    BirdSongSynthesizer.generateSongWav(bird, wavCache)
+                    BirdSongSynthesizer.playSongWithAudioTrack(bird)
+                }
+
+                if (track != null) {
+                    activeAudioTrack = track
+                    isPlayingSyntheticTrack = true
+                    _playbackState.value = PlaybackState(
+                        currentBirdId = bird.scientificName,
+                        isPlaying = true,
+                        isBuffering = false,
+                        durationMs = 3000L
+                    )
+
+                    // Track synthetic progress
+                    scope.launch {
+                        val startTime = System.currentTimeMillis()
+                        val duration = 3000L
+                        while (isActive && isPlayingSyntheticTrack) {
+                            val elapsed = System.currentTimeMillis() - startTime
+                            val prog = (elapsed.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+                            _playbackState.value = _playbackState.value.copy(
+                                currentPositionMs = elapsed,
+                                progress = prog,
+                                isPlaying = true
+                            )
+                            if (elapsed >= duration) {
+                                isPlayingSyntheticTrack = false
+                                _playbackState.value = _playbackState.value.copy(
+                                    isPlaying = false,
+                                    progress = 0f,
+                                    currentPositionMs = 0L
+                                )
+                                stopSyntheticTrack()
+                                break
+                            }
+                            delay(100)
+                        }
+                    }
+                } else {
+                    _playbackState.value = PlaybackState(
+                        currentBirdId = bird.scientificName,
+                        isPlaying = false,
+                        isBuffering = false,
+                        error = "No se pudo reproducir el canto"
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e("BirdAudioPlayer", "Synthetic fallback error", e)
+                _playbackState.value = PlaybackState(
+                    currentBirdId = bird.scientificName,
+                    isPlaying = false,
+                    isBuffering = false,
+                    error = "Error al reproducir audio"
+                )
+            }
+        }
+    }
+
+    private fun stopSyntheticTrack() {
+        isPlayingSyntheticTrack = false
+        try {
+            activeAudioTrack?.stop()
+            activeAudioTrack?.release()
+        } catch (_: Exception) {}
+        activeAudioTrack = null
     }
 
     fun playOrPause(birdId: String, audioUrl: String?) {
@@ -350,6 +415,7 @@ class BirdAudioPlayer(private val context: Context) {
     fun stop() {
         audioResolutionJob?.cancel()
         audioResolutionJob = null
+        stopSyntheticTrack()
         try {
             player.stop()
         } catch (_: Exception) {}
@@ -359,6 +425,7 @@ class BirdAudioPlayer(private val context: Context) {
 
     fun release() {
         audioResolutionJob?.cancel()
+        stopSyntheticTrack()
         stopProgressTracking()
         try {
             player.release()

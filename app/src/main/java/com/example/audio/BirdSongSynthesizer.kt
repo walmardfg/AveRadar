@@ -27,7 +27,7 @@ object BirdSongSynthesizer {
         }
     }
 
-    private fun generateBirdSongSamples(bird: BirdSpecies): ShortArray {
+    fun generateBirdSongSamples(bird: BirdSpecies): ShortArray {
         val sci = bird.scientificName.lowercase()
         val family = bird.familyName.lowercase()
         val common = bird.commonName.lowercase()
@@ -39,7 +39,13 @@ object BirdSongSynthesizer {
             sci.contains("turdus") || common.contains("zorzal") || common.contains("mirlo") -> 3.8
             sci.contains("columba") || sci.contains("columbina") || common.contains("paloma") || common.contains("torcacita") -> 3.0
             sci.contains("vanellus") || common.contains("tero") -> 2.4
-            sci.contains("athene") || common.contains("lechuza") || common.contains("buho") -> 2.8
+            sci.contains("geranoaetus") || sci.contains("aquila") || sci.contains("buteo") || sci.contains("falco") ||
+                    common.contains("aguila") || common.contains("halcon") || common.contains("gavil") -> 2.8
+            sci.contains("tyto") || sci.contains("athene") || sci.contains("glaucidium") || sci.contains("bubo") ||
+                    common.contains("lechuza") || common.contains("buho") -> 3.0
+            sci.contains("colaptes") || sci.contains("campephilus") || common.contains("carpintero") -> 2.5
+            sci.contains("chlorostilbon") || sci.contains("hylocharis") || common.contains("colibri") || common.contains("picaflor") -> 2.2
+            sci.contains("sicalis") || sci.contains("spinus") || sci.contains("serinus") || common.contains("canario") || common.contains("jilguero") -> 3.4
             else -> 3.0
         }
 
@@ -54,6 +60,29 @@ object BirdSongSynthesizer {
             // Benteveo: iconic "¡Bien-te-veo!" sharp energetic whistle
             sci.contains("pitangus") || common.contains("benteveo") -> {
                 generateBenteveoSong(floatBuffer)
+            }
+            // Águila / Halcón / Raptor: piercing high-frequency hunting cries
+            sci.contains("geranoaetus") || sci.contains("aquila") || sci.contains("buteo") || sci.contains("falco") ||
+                    common.contains("aguila") || common.contains("halcon") || common.contains("gavil") -> {
+                generateRaptorCry(floatBuffer)
+            }
+            // Lechuza / Búho: deep hollow resonant territorial hoots
+            sci.contains("tyto") || sci.contains("athene") || sci.contains("glaucidium") || sci.contains("bubo") ||
+                    common.contains("lechuza") || common.contains("buho") -> {
+                generateOwlHoot(floatBuffer)
+            }
+            // Carpintero: rapid rhythmic wood tapping sequence
+            sci.contains("colaptes") || sci.contains("campephilus") || common.contains("carpintero") -> {
+                generateWoodpeckerDrumming(floatBuffer)
+            }
+            // Colibrí / Picaflor: delicate crystalline high-pitch chirps
+            sci.contains("chlorostilbon") || sci.contains("hylocharis") || common.contains("colibri") || common.contains("picaflor") -> {
+                generateHummingbirdChirp(floatBuffer)
+            }
+            // Canario / Jilguero: cascading melodic trills and flute runs
+            sci.contains("sicalis") || sci.contains("spinus") || sci.contains("serinus") ||
+                    common.contains("canario") || common.contains("jilguero") -> {
+                generateCanaryWarble(floatBuffer)
             }
             // Zorzal / Mirlo / Thrush: rich melodic flute warbles
             sci.contains("turdus") || common.contains("zorzal") || common.contains("mirlo") -> {
@@ -286,6 +315,147 @@ object BirdSongSynthesizer {
                 buffer[pos + i] += ((s1 + s2) * env * 0.7).toFloat()
             }
             pos += len + (SAMPLE_RATE * 0.3).toInt()
+        }
+    }
+
+    private fun generateRaptorCry(buffer: FloatArray) {
+        val cries = listOf(
+            Pair(0.2, 0.45),
+            Pair(1.1, 0.55),
+            Pair(2.0, 0.50)
+        )
+        for (c in cries) {
+            val start = (c.first * SAMPLE_RATE).toInt()
+            val len = (c.second * SAMPLE_RATE).toInt()
+            for (i in 0 until len) {
+                if (start + i >= buffer.size) break
+                val t = i.toDouble() / SAMPLE_RATE
+                val prog = i.toDouble() / len
+                val env = sin(PI * prog).let { it * it }
+                val freq = 3400.0 - (prog * 1200.0) // sharp descending piercing cry
+                val vibrato = sin(2.0 * PI * 18.0 * t) * 60.0
+                val s1 = sin(2.0 * PI * (freq + vibrato) * t)
+                val s2 = sin(4.0 * PI * (freq + vibrato) * t) * 0.35
+                buffer[start + i] += ((s1 + s2) * env * 0.8f).toFloat()
+            }
+        }
+    }
+
+    private fun generateOwlHoot(buffer: FloatArray) {
+        val hoots = listOf(
+            Triple(0.3, 0.35, 380.0),
+            Triple(0.8, 0.75, 420.0),
+            Triple(1.8, 0.85, 360.0)
+        )
+        for (h in hoots) {
+            val start = (h.first * SAMPLE_RATE).toInt()
+            val len = (h.second * SAMPLE_RATE).toInt()
+            val baseFreq = h.third
+            for (i in 0 until len) {
+                if (start + i >= buffer.size) break
+                val t = i.toDouble() / SAMPLE_RATE
+                val prog = i.toDouble() / len
+                val env = sin(PI * prog)
+                val tremolo = 1.0 + 0.15 * sin(2.0 * PI * 12.0 * t)
+                val freq = baseFreq + sin(PI * prog) * 40.0
+                val s1 = sin(2.0 * PI * freq * t)
+                val s2 = sin(4.0 * PI * freq * t) * 0.2
+                buffer[start + i] += (s1 * tremolo * env * 0.85f + s2 * env * 0.2f).toFloat()
+            }
+        }
+    }
+
+    private fun generateWoodpeckerDrumming(buffer: FloatArray) {
+        // High-speed mechanical wood roll + brief whistle
+        val taps = 16
+        val startSample = (0.2 * SAMPLE_RATE).toInt()
+        val tapInterval = (0.045 * SAMPLE_RATE).toInt()
+        for (tp in 0 until taps) {
+            val sPos = startSample + (tp * tapInterval)
+            val tapLen = (0.018 * SAMPLE_RATE).toInt()
+            for (i in 0 until tapLen) {
+                if (sPos + i >= buffer.size) break
+                val prog = i.toDouble() / tapLen
+                val env = exp(-prog * 8.0)
+                val t = i.toDouble() / SAMPLE_RATE
+                val s = sin(2.0 * PI * 850.0 * t) + sin(2.0 * PI * 1700.0 * t) * 0.5
+                buffer[sPos + i] += (s * env * 0.9f).toFloat()
+            }
+        }
+        // trailing whinny
+        val whinnyStart = startSample + (taps * tapInterval) + (0.1 * SAMPLE_RATE).toInt()
+        val whinnyLen = (0.8 * SAMPLE_RATE).toInt()
+        for (i in 0 until whinnyLen) {
+            if (whinnyStart + i >= buffer.size) break
+            val t = i.toDouble() / SAMPLE_RATE
+            val prog = i.toDouble() / whinnyLen
+            val env = sin(PI * prog)
+            val freq = 2200.0 + sin(2.0 * PI * 14.0 * t) * 200.0 - (prog * 400.0)
+            buffer[whinnyStart + i] += (sin(2.0 * PI * freq * t) * env * 0.7f).toFloat()
+        }
+    }
+
+    private fun generateHummingbirdChirp(buffer: FloatArray) {
+        val chirps = listOf(0.2, 0.5, 0.75, 1.2, 1.45, 1.7)
+        for (c in chirps) {
+            val start = (c * SAMPLE_RATE).toInt()
+            val len = (0.08 * SAMPLE_RATE).toInt()
+            for (i in 0 until len) {
+                if (start + i >= buffer.size) break
+                val t = i.toDouble() / SAMPLE_RATE
+                val prog = i.toDouble() / len
+                val env = sin(PI * prog)
+                val freq = 6500.0 + (prog * 2500.0) // high frequency crystalline chirp
+                buffer[start + i] += (sin(2.0 * PI * freq * t) * env * 0.75f).toFloat()
+            }
+        }
+    }
+
+    private fun generateCanaryWarble(buffer: FloatArray) {
+        val notes = 22
+        var pos = (0.2 * SAMPLE_RATE).toInt()
+        for (n in 0 until notes) {
+            val len = (0.065 * SAMPLE_RATE).toInt()
+            val freq = 3200.0 + ((n % 5) * 450.0) + sin(n.toDouble()) * 300.0
+            for (i in 0 until len) {
+                if (pos + i >= buffer.size) break
+                val t = i.toDouble() / SAMPLE_RATE
+                val prog = i.toDouble() / len
+                val env = sin(PI * prog)
+                val s = sin(2.0 * PI * freq * t) + sin(4.0 * PI * freq * t) * 0.25
+                buffer[pos + i] += (s * env * 0.8f).toFloat()
+            }
+            pos += len + (0.02 * SAMPLE_RATE).toInt()
+        }
+    }
+
+    fun playSongWithAudioTrack(bird: BirdSpecies): android.media.AudioTrack? {
+        return try {
+            val samples = generateBirdSongSamples(bird)
+            val audioTrack = android.media.AudioTrack.Builder()
+                .setAudioAttributes(
+                    android.media.AudioAttributes.Builder()
+                        .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build()
+                )
+                .setAudioFormat(
+                    android.media.AudioFormat.Builder()
+                        .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(SAMPLE_RATE)
+                        .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_MONO)
+                        .build()
+                )
+                .setBufferSizeInBytes(samples.size * 2)
+                .setTransferMode(android.media.AudioTrack.MODE_STATIC)
+                .build()
+
+            audioTrack.write(samples, 0, samples.size)
+            audioTrack.play()
+            audioTrack
+        } catch (e: Exception) {
+            android.util.Log.e("BirdSongSynthesizer", "Direct AudioTrack error", e)
+            null
         }
     }
 

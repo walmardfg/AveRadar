@@ -75,9 +75,11 @@ fun RadarHeader(
     isRefreshing: Boolean,
     searchQuery: String,
     activeFilter: BirdFilter,
+    isSearchingOnline: Boolean = false,
     onRefreshLocation: () -> Unit,
     onSearchCity: (String) -> Unit,
     onUpdateSearchQuery: (String) -> Unit,
+    onTriggerSearchOnline: (String) -> Unit = {},
     onSelectFilter: (BirdFilter) -> Unit,
     onShowInfoClick: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -333,20 +335,40 @@ fun RadarHeader(
             placeholder = { Text("Buscar aves por nombre o canto...", fontSize = 13.5.sp, color = GeoTextSecondary.copy(alpha = 0.6f)) },
             textStyle = MaterialTheme.typography.bodyMedium.copy(color = GeoTextPrimary, fontSize = 14.sp),
             leadingIcon = {
-                Icon(
-                    imageVector = Icons.Default.Search,
-                    contentDescription = null,
-                    tint = GeoTextSecondary,
-                    modifier = Modifier.size(20.dp)
-                )
+                IconButton(onClick = {
+                    if (searchQuery.isNotBlank()) {
+                        onTriggerSearchOnline(searchQuery)
+                        focusManager.clearFocus()
+                    }
+                }) {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = "Buscar ave",
+                        tint = if (searchQuery.isNotBlank()) GeoPrimaryGreen else GeoTextSecondary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
             },
             trailingIcon = {
-                if (searchQuery.isNotEmpty()) {
+                if (isSearchingOnline) {
+                    androidx.compose.material3.CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = GeoPrimaryGreen
+                    )
+                } else if (searchQuery.isNotEmpty()) {
                     IconButton(onClick = { onUpdateSearchQuery("") }) {
                         Icon(imageVector = Icons.Default.Clear, contentDescription = "Limpiar búsqueda", tint = GeoTextSecondary)
                     }
                 }
             },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = {
+                if (searchQuery.isNotBlank()) {
+                    onTriggerSearchOnline(searchQuery)
+                }
+                focusManager.clearFocus()
+            }),
             singleLine = true,
             shape = CircleShape,
             colors = OutlinedTextFieldDefaults.colors(
@@ -366,6 +388,38 @@ fun RadarHeader(
                 .fillMaxWidth()
                 .testTag("bird_search_bar")
         )
+
+        // Quick bird suggestions row
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 6.dp)
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            val birdSuggestions = listOf("🦅 Águila", "🦉 Lechuza", "🐦 Canario", "🌿 Colibrí", "🪵 Carpintero", "🦆 Pato", "🦜 Loro", "🕊️ Torcaza", "🦩 Flamenco")
+            birdSuggestions.forEach { tag ->
+                val cleanTag = tag.substringAfter(" ")
+                val isSelected = searchQuery.equals(cleanTag, ignoreCase = true)
+                Surface(
+                    shape = CircleShape,
+                    color = if (isSelected) GeoPrimaryGreen.copy(alpha = 0.2f) else GeoSurfaceVariant.copy(alpha = 0.7f),
+                    border = BorderStroke(1.dp, if (isSelected) GeoPrimaryGreen else GeoOutline.copy(alpha = 0.25f)),
+                    modifier = Modifier.clickable {
+                        onUpdateSearchQuery(cleanTag)
+                        onTriggerSearchOnline(cleanTag)
+                        focusManager.clearFocus()
+                    }
+                ) {
+                    Text(
+                        text = tag,
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.5.sp),
+                        color = GeoTextPrimary,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
+                }
+            }
+        }
 
         Spacer(modifier = Modifier.height(8.dp))
 

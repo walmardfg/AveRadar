@@ -14,6 +14,8 @@ import com.example.data.repository.InitialBirdData
 import com.example.location.LocationHelper
 import com.example.location.UserLocation
 import com.example.model.BirdSpecies
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -35,6 +37,7 @@ data class BirdRadarUiState(
     val filteredBirds: List<BirdSpecies> = InitialBirdData.defaultBirds,
     val isLoading: Boolean = false,
     val isRefreshing: Boolean = false,
+    val isSearchingOnline: Boolean = false,
     val searchQuery: String = "",
     val activeFilter: BirdFilter = BirdFilter.ALL,
     val currentLocation: UserLocation = UserLocation(-34.6037, -58.3816, "Reserva Natural Costanera Sur", true),
@@ -138,9 +141,48 @@ class BirdViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private var searchJob: Job? = null
+
     fun updateSearchQuery(query: String) {
         _uiState.value = _uiState.value.copy(searchQuery = query)
         applyCurrentFilters()
+
+        searchJob?.cancel()
+        val trimmed = query.trim()
+        if (trimmed.length >= 2) {
+            searchJob = viewModelScope.launch {
+                delay(350) // Debounce typing
+                searchBirdsOnline(trimmed)
+            }
+        }
+    }
+
+    fun searchBirdsOnline(query: String) {
+        val trimmed = query.trim()
+        if (trimmed.isBlank()) return
+
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isSearchingOnline = true)
+            val result = repository.searchBirdsOnline(trimmed)
+            result.onSuccess { foundBirds ->
+                if (foundBirds.isNotEmpty()) {
+                    val existingMap = _uiState.value.birds.associateBy { it.scientificName.lowercase() }.toMutableMap()
+                    foundBirds.forEach { bird ->
+                        existingMap[bird.scientificName.lowercase()] = bird
+                    }
+                    _uiState.value = _uiState.value.copy(
+                        birds = existingMap.values.toList(),
+                        isSearchingOnline = false
+                    )
+                    applyCurrentFilters()
+                } else {
+                    _uiState.value = _uiState.value.copy(isSearchingOnline = false)
+                }
+            }.onFailure {
+                _uiState.value = _uiState.value.copy(isSearchingOnline = false)
+            }
+        }
     }
 
     fun setFilter(filter: BirdFilter) {
